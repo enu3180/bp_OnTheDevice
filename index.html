@@ -31,7 +31,7 @@
       background: var(--bg);
       color: var(--text);
       line-height: 1.5;
-      padding-bottom: 48px;
+      padding-bottom: 56px;
     }
 
     header {
@@ -340,10 +340,56 @@
       pointer-events: none;
       transition: opacity 0.2s ease;
       z-index: 50;
+      max-width: 92vw;
+      text-align: center;
     }
 
     .toast.show {
       opacity: 1;
+    }
+
+    /* 月次バックアップ確認モーダル */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 60;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.18);
+    }
+
+    .modal-title {
+      font-size: 1rem;
+      font-weight: 700;
+      margin: 0 0 10px;
+    }
+
+    .modal-message {
+      font-size: 0.95rem;
+      margin: 0 0 16px;
+      color: var(--text);
+    }
+
+    .modal-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
     }
 
     canvas {
@@ -433,7 +479,7 @@
       <div class="card">
         <h2 class="card-title">バックアップ（CSV / JSON）</h2>
         <p class="note-text">
-          データは患者さんのブラウザ内に保存されます。機種変更やブラウザ削除に備え、必要に応じてファイルを保存・復元できます。
+          データは患者さんのブラウザ内に保存されます。機種変更やブラウザデータ消去に備え、必要に応じてファイルを保存・復元できます。
         </p>
         <div class="btn-row">
           <button type="button" class="btn btn-secondary" id="export-csv">CSV書き出し</button>
@@ -471,7 +517,7 @@
       </div>
     </section>
 
-    <!-- 4. グラフ可視化（期間制限なし・ショートカット・ピンチ拡大縮小） -->
+    <!-- 4. グラフ可視化 -->
     <section id="chart-view" class="tab-panel">
       <div class="card">
         <h2 class="card-title">血圧・服薬推移グラフ</h2>
@@ -519,17 +565,29 @@
     </section>
   </main>
 
+  <!-- 月次バックアップ確認ダイアログ -->
+  <div id="backup-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="backup-modal-title">
+    <div class="modal-box">
+      <h2 id="backup-modal-title" class="modal-title">バックアップの確認</h2>
+      <p class="modal-message">先月から1ヶ月以上経ちました。記録のバックアップ（保存）をとりますか？</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" id="backup-yes-btn">はい</button>
+        <button type="button" class="btn btn-outline" id="backup-no-btn">いいえ</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
     const STORAGE_KEY = "bp_med_test_records_v2";
     const THRESHOLD_KEY = "bp_med_test_thresholds_v1";
+    const BACKUP_MONTH_KEY = "bp_med_last_backup_month_v1";
 
-    // 表示窓の状態（全期間を基準とし、windowSpanMs と windowEndMs で拡大縮小・左右スクロールを制御）
     const chartState = {
-      mode: "all",        // "all" または 日数文字列（"14", "30", "90", "120"）
-      windowSpanMs: null, // null なら全期間表示。数値なら表示幅（ミリ秒）
-      windowEndMs: null   // null なら最新時点まで。数値なら右端時刻（ミリ秒）
+      mode: "all",
+      windowSpanMs: null,
+      windowEndMs: null
     };
 
     function loadRecords() {
@@ -571,7 +629,7 @@
       el.textContent = msg;
       el.classList.add("show");
       clearTimeout(showToast._timer);
-      showToast._timer = setTimeout(() => el.classList.remove("show"), 2200);
+      showToast._timer = setTimeout(() => el.classList.remove("show"), 2600);
     }
 
     function getNowLocalInputValue() {
@@ -590,6 +648,64 @@
       return `${m}/${day} ${h}:${min}`;
     }
 
+    function getYearMonthString(dateObj = new Date()) {
+      const y = dateObj.getFullYear();
+      const m = String(dateObj.getMonth() + 1).padStart(2, "0");
+      return `${y}-${m}`;
+    }
+
+    function getMonthIndex(ymStr) {
+      if (!ymStr || !/^\d{4}-\d{2}$/.test(ymStr)) return null;
+      const [y, m] = ymStr.split("-").map(Number);
+      return y * 12 + (m - 1);
+    }
+
+    // 記録保存後に呼ばれる月次バックアップ確認（1ヶ月以上経過＝月差1以上、かつ今月まだ確認していない場合）
+    function checkMonthlyBackupPrompt() {
+      const currentYm = getYearMonthString(new Date());
+      const currentIdx = getMonthIndex(currentYm);
+      const lastRecordedYm = localStorage.getItem(BACKUP_MONTH_KEY);
+
+      if (!lastRecordedYm) {
+        localStorage.setItem(BACKUP_MONTH_KEY, currentYm);
+        return;
+      }
+
+      const lastIdx = getMonthIndex(lastRecordedYm);
+      if (lastIdx !== null && currentIdx !== null && currentIdx - lastIdx >= 1) {
+        openBackupModal(currentYm);
+      }
+    }
+
+    let pendingConfirmYm = null;
+
+    function openBackupModal(currentYm) {
+      pendingConfirmYm = currentYm;
+      document.getElementById("backup-modal").classList.add("open");
+    }
+
+    function closeBackupModal() {
+      document.getElementById("backup-modal").classList.remove("open");
+      pendingConfirmYm = null;
+    }
+
+    document.getElementById("backup-yes-btn").addEventListener("click", () => {
+      exportJsonBackup();
+      if (pendingConfirmYm) {
+        localStorage.setItem(BACKUP_MONTH_KEY, pendingConfirmYm);
+      }
+      closeBackupModal();
+      showToast("バックアップファイルを保存しました（スマホのダウンロード欄をご確認ください）");
+    });
+
+    document.getElementById("backup-no-btn").addEventListener("click", () => {
+      if (pendingConfirmYm) {
+        localStorage.setItem(BACKUP_MONTH_KEY, pendingConfirmYm);
+      }
+      closeBackupModal();
+      showToast("今回はバックアップをスキップしました");
+    });
+
     function addMedRecord(datetimeStr) {
       const records = loadRecords();
       records.push({
@@ -599,9 +715,9 @@
       });
       saveRecords(records);
       showToast(`服薬を記録しました（${formatDisplayDate(datetimeStr)}）`);
+      checkMonthlyBackupPrompt();
     }
 
-    // タブ切り替え
     document.querySelectorAll(".tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
@@ -672,6 +788,7 @@
       document.getElementById("bp-pulse").value = "";
       document.getElementById("bp-datetime").value = getNowLocalInputValue();
       showToast("血圧データを保存しました");
+      checkMonthlyBackupPrompt();
     });
 
     function renderTable() {
@@ -723,15 +840,18 @@
 
     document.getElementById("filter-type").addEventListener("change", renderTable);
 
-    // JSON書き出し
-    document.getElementById("export-json").addEventListener("click", () => {
-      const data = loadRecords();
+    function exportJsonBackup() {
+      const data = loadRecords().sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       downloadBlob(blob, `bp-med-backup-${dateStamp()}.json`);
+      localStorage.setItem(BACKUP_MONTH_KEY, getYearMonthString(new Date()));
+    }
+
+    document.getElementById("export-json").addEventListener("click", () => {
+      exportJsonBackup();
       showToast("JSONファイルを書き出しました");
     });
 
-    // CSV書き出し
     document.getElementById("export-csv").addEventListener("click", () => {
       const records = loadRecords().sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
       const headers = ["日時", "種別", "最高血圧", "最低血圧", "脈拍"];
@@ -743,7 +863,7 @@
         r.type === "bp" ? r.pulse ?? "" : ""
       ]);
       const csvContent = "\uFEFF" + [headers, ...rows]
-        .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+        .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
         .join("\r\n");
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       downloadBlob(blob, `bp-med-records-${dateStamp()}.csv`);
@@ -755,8 +875,10 @@
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     function dateStamp() {
@@ -764,7 +886,6 @@
       return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
     }
 
-    // JSON読み込み
     document.getElementById("import-json").addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
@@ -804,7 +925,6 @@
       reader.readAsText(file);
     });
 
-    // ショートカットボタン・拡大縮小
     function setShortcutMode(daysVal) {
       chartState.mode = daysVal;
       chartState.windowEndMs = null;
@@ -843,7 +963,7 @@
       const records = loadRecords();
       const { minTs, maxTs } = getFullBoundsMs(records);
       const fullSpan = Math.max(24 * 60 * 60 * 1000, maxTs - minTs);
-      const minSpan = 3 * 24 * 60 * 60 * 1000; // 最小3日幅
+      const minSpan = 3 * 24 * 60 * 60 * 1000;
 
       const currentSpan = chartState.windowSpanMs || fullSpan;
       const currentEnd = chartState.windowEndMs || maxTs;
@@ -876,7 +996,6 @@
       showToast(`目安値を ${sysVal}/${diaVal} mmHg に更新しました`);
     });
 
-    // グラフ描画（制限撤廃・全期間対応・ズーム＆パン対応）
     function drawChart() {
       const canvas = document.getElementById("bp-chart");
       const ctx = canvas.getContext("2d");
@@ -938,7 +1057,6 @@
       const safeSpan = Math.max(1, endMs - startMs);
       const toX = (ts) => padLeft + ((ts - startMs) / safeSpan) * plotW;
 
-      // 横目盛り線
       ctx.strokeStyle = "#e2e8f0";
       ctx.lineWidth = 1;
       ctx.fillStyle = "#64748b";
@@ -952,7 +1070,6 @@
         ctx.fillText(String(v), 8, y + 4);
       });
 
-      // 目安線（最高・最低）
       [
         { val: th.sys, label: `上:${th.sys}` },
         { val: th.dia, label: `下:${th.dia}` }
@@ -971,7 +1088,6 @@
         ctx.fillText(line.label, w - padRight - 38, y - 3);
       });
 
-      // 投薬タイミングの縦線と上端三角マーカー
       medList.forEach((m) => {
         const x = toX(m.ts);
         ctx.save();
@@ -992,7 +1108,6 @@
         ctx.fill();
       });
 
-      // X軸の日付目盛り（6分割）
       ctx.fillStyle = "#64748b";
       ctx.font = "10px sans-serif";
       const ticks = 6;
@@ -1045,7 +1160,6 @@
       });
     }
 
-    // ピンチイン／ピンチアウト（2本指）＋1本指水平スクロール対応
     const chartCanvas = document.getElementById("bp-chart");
     let pinchStartDist = null;
     let pinchStartSpan = null;
@@ -1084,7 +1198,7 @@
         e.preventDefault();
         const dist = getTouchDistance(e.touches[0], e.touches[1]);
         if (dist > 10) {
-          const scale = pinchStartDist / dist; // ピンチアウト(指を広げる)で span が小さくなり拡大
+          const scale = pinchStartDist / dist;
           const nextSpan = Math.max(minSpan, Math.min(fullSpan, pinchStartSpan * scale));
           if (nextSpan >= fullSpan * 0.999) {
             chartState.mode = "all";
@@ -1123,16 +1237,6 @@
         panStartEnd = null;
       }
     });
-
-    // PCでのマウスホイール拡大縮小にも対応
-    chartCanvas.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      if (e.deltaY < 0) {
-        zoomByFactor(0.75);
-      } else if (e.deltaY > 0) {
-        zoomByFactor(1.35);
-      }
-    }, { passive: false });
 
     initInputs();
     renderTable();
